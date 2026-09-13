@@ -93,10 +93,10 @@ __global__ void avgpool_nchw_dgrad_kernel(const IO_T* gradient, IO_T* grad_input
 }
 
 template <typename IO_T, typename COMPUTE_T>
-void avgpool_nchw_fwd(const IO_T* input, IO_T* output, size_t batch_size, size_t channels, size_t input_h,
-                      size_t input_w, size_t output_h, size_t output_w, size_t pool_h,
-                      size_t pool_w, size_t stride_h, size_t stride_w, size_t pad_h, size_t pad_w,
-                      cudaStream_t stream) {
+void avgpool_nchw_fwd(const IO_T* input, IO_T* output, size_t batch_size, size_t channels,
+                      size_t input_h, size_t input_w, size_t output_h, size_t output_w,
+                      size_t pool_h, size_t pool_w, size_t stride_h, size_t stride_w, size_t pad_h,
+                      size_t pad_w, cudaStream_t stream) {
   int total_outputs = batch_size * channels * output_h * output_w;
   int threads_per_block = 256;
   int num_blocks = (total_outputs + threads_per_block - 1) / threads_per_block;
@@ -125,10 +125,10 @@ void avgpool_nchw_bwd(const IO_T* gradient, IO_T* grad_input, size_t batch_size,
 }
 
 template <typename IO_T, typename COMPUTE_T>
-__global__ void avgpool_fwd_kernel(const IO_T* input, IO_T* output, size_t batch_size, size_t height,
-                                   size_t width, size_t channels, size_t pool_h, size_t pool_w,
-                                   size_t stride_h, size_t stride_w, size_t pad_h, size_t pad_w,
-                                   size_t output_h, size_t output_w) {
+__global__ void avgpool_fwd_kernel(const IO_T* input, IO_T* output, size_t batch_size,
+                                   size_t height, size_t width, size_t channels, size_t pool_h,
+                                   size_t pool_w, size_t stride_h, size_t stride_w, size_t pad_h,
+                                   size_t pad_w, size_t output_h, size_t output_w) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   size_t total_outputs = batch_size * output_h * output_w * channels;
 
@@ -241,7 +241,9 @@ __global__ void maxpool_nchw_fwd_kernel(const IO_T* input, IO_T* output, size_t 
   }
 
   output[idx] = max_val;
-  mask_indices[idx] = max_idx;
+  if (mask_indices) {
+    mask_indices[idx] = max_idx;
+  }
 }
 
 template <typename IO_T>
@@ -260,10 +262,10 @@ __global__ void maxpool_nchw_dgrad_kernel(const IO_T* gradient, IO_T* grad_input
 }
 
 template <typename IO_T>
-__global__ void maxpool_fwd_kernel(const IO_T* input, IO_T* output, int* mask_indices, size_t batch_size,
-                                   size_t height, size_t width, size_t channels, size_t pool_h,
-                                   size_t pool_w, size_t stride_h, size_t stride_w, size_t pad_h,
-                                   size_t pad_w, size_t output_h, size_t output_w) {
+__global__ void maxpool_fwd_kernel(const IO_T* input, IO_T* output, int* mask_indices,
+                                   size_t batch_size, size_t height, size_t width, size_t channels,
+                                   size_t pool_h, size_t pool_w, size_t stride_h, size_t stride_w,
+                                   size_t pad_h, size_t pad_w, size_t output_h, size_t output_w) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   size_t total_outputs = batch_size * output_h * output_w * channels;
 
@@ -304,10 +306,11 @@ __global__ void maxpool_fwd_kernel(const IO_T* input, IO_T* output, int* mask_in
 }
 
 template <typename IO_T>
-__global__ void maxpool_dgrad_kernel(const IO_T* grad_output, IO_T* grad_input, const int* mask_indices,
-                                     size_t batch_size, size_t channels, size_t output_h,
-                                     size_t output_w, size_t input_h, size_t input_w, size_t pool_w,
-                                     size_t stride_h, size_t stride_w, size_t pad_h, size_t pad_w) {
+__global__ void maxpool_dgrad_kernel(const IO_T* grad_output, IO_T* grad_input,
+                                     const int* mask_indices, size_t batch_size, size_t channels,
+                                     size_t output_h, size_t output_w, size_t input_h,
+                                     size_t input_w, size_t pool_w, size_t stride_h,
+                                     size_t stride_w, size_t pad_h, size_t pad_w) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   size_t total_outputs = batch_size * output_h * output_w * channels;
 

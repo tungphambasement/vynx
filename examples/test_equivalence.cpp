@@ -8,6 +8,8 @@
 #include "device/device_allocator.hpp"
 #include "device/device_manager.hpp"
 #include "equivalence_utils.hpp"
+#include "nn/engines/cuda_engine.hpp"
+#include "nn/engines/cudnn_engine.hpp"
 #include "nn/example_graphs.hpp"
 #include "nn/graph.hpp"
 #include "nn/graph_executor.hpp"
@@ -22,6 +24,7 @@ int main(int argc, char** argv) {
   std::string tunx_dir = "";
   size_t batch_size = 1;
   std::string executor_mode = "optimized";
+  std::string engine_mode = "default";
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -35,6 +38,8 @@ int main(int argc, char** argv) {
       batch_size = std::stoi(argv[++i]);
     } else if (arg == "--executor-mode" && i + 1 < argc) {
       executor_mode = argv[++i];
+    } else if (arg == "--engine" && i + 1 < argc) {
+      engine_mode = argv[++i];
     } else {
       std::cerr << "Unknown argument: " << arg << std::endl;
       return 1;
@@ -44,7 +49,8 @@ int main(int argc, char** argv) {
   if (pt_dir.empty() || tunx_dir.empty()) {
     std::cerr << "Usage: " << argv[0]
               << " --model <name> --pt-dir <dir> --tunx-dir <dir> [--batch-size <N>]"
-              << " [--executor-mode optimized|naive|linear|branching|joining]" << std::endl;
+              << " [--executor-mode optimized|naive|linear|branching|joining]"
+              << " [--engine default|cuda|cudnn]" << std::endl;
     return 1;
   }
 
@@ -74,6 +80,14 @@ int main(int argc, char** argv) {
   ExampleGraphs::register_defaults();
 
   GraphOpts opts;
+  if (engine_mode == "cuda") {
+    opts.engine = make_engine<CUDAEngine>();
+  } else if (engine_mode == "cudnn") {
+    opts.engine = make_engine<CuDNNEngine>();
+  } else if (engine_mode != "default") {
+    std::cerr << "Unknown engine: " << engine_mode << std::endl;
+    return 1;
+  }
 
   std::string actual_model_name = model_name;
   if (model_name == "resnet50") {

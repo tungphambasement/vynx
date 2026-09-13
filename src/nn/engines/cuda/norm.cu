@@ -323,11 +323,10 @@ __global__ void batchnorm_fwd_kernel_vec(
 }
 
 template <typename IO_T, typename COMPUTE_T>
-__global__ void batchnorm_wgrad_bgrad_reduce_kernel(const IO_T* __restrict__ grad_output,
-                                                    const COMPUTE_T* __restrict__ normalized_input,
-                                                    COMPUTE_T* __restrict__ d_gamma,
-                                                    COMPUTE_T* __restrict__ d_beta, size_t N,
-                                                    size_t C, size_t S) {
+__global__ void batchnorm_wgrad_bgrad_reduce_kernel(
+    const IO_T* __restrict__ grad_output, const IO_T* __restrict__ input,
+    const COMPUTE_T* __restrict__ batch_mean, const COMPUTE_T* __restrict__ batch_invar,
+    COMPUTE_T* __restrict__ d_gamma, COMPUTE_T* __restrict__ d_beta, size_t N, size_t C, size_t S) {
   int c = blockIdx.x;
   if (c >= C) return;
 
@@ -344,7 +343,8 @@ __global__ void batchnorm_wgrad_bgrad_reduce_kernel(const IO_T* __restrict__ gra
     size_t idx = n * stride + offset + s;
 
     COMPUTE_T dy = static_cast<COMPUTE_T>(grad_output[idx]);
-    float x_hat = normalized_input[idx];
+    float x_hat = (static_cast<float>(input[idx]) - static_cast<float>(batch_mean[c])) *
+                  static_cast<float>(batch_invar[c]);
 
     sum_dy += dy;
     sum_dy_x_norm += static_cast<float>(dy) * x_hat;
@@ -361,7 +361,8 @@ __global__ void batchnorm_wgrad_bgrad_reduce_kernel(const IO_T* __restrict__ gra
 
 template <typename IO_T, typename COMPUTE_T>
 __global__ void batchnorm_wgrad_bgrad_reduce_kernel_vec(
-    const IO_T* __restrict__ grad_output, const COMPUTE_T* __restrict__ normalized_input,
+    const IO_T* __restrict__ grad_output, const IO_T* __restrict__ input,
+    const COMPUTE_T* __restrict__ batch_mean, const COMPUTE_T* __restrict__ batch_invar,
     COMPUTE_T* __restrict__ d_gamma, COMPUTE_T* __restrict__ d_beta, size_t N, size_t C, size_t S) {
   using VecT = typename VectoredTraits<IO_T>::type;
   constexpr int vec_size = VectoredTraits<IO_T>::size;
@@ -390,7 +391,8 @@ __global__ void batchnorm_wgrad_bgrad_reduce_kernel_vec(
 #pragma unroll
     for (int k = 0; k < vec_size; ++k) {
       COMPUTE_T dy = static_cast<COMPUTE_T>(dy_arr[k]);
-      float x_hat = normalized_input[idx + k];
+      float x_hat = (static_cast<float>(input[idx + k]) - static_cast<float>(batch_mean[c])) *
+                    static_cast<float>(batch_invar[c]);
       sum_dy += dy;
       sum_dy_x_norm += static_cast<float>(dy) * x_hat;
     }
@@ -407,10 +409,11 @@ __global__ void batchnorm_wgrad_bgrad_reduce_kernel_vec(
 
 template <typename IO_T, typename PARAM_T, typename COMPUTE_T>
 __global__ void batchnorm_dgrad_kernel(
-    const IO_T* __restrict__ grad_output, const COMPUTE_T* __restrict__ normalized_input,
-    const COMPUTE_T* __restrict__ inv_std, const PARAM_T* __restrict__ gamma,
-    const COMPUTE_T* __restrict__ d_gamma, const COMPUTE_T* __restrict__ d_beta,
-    IO_T* __restrict__ grad_input, size_t N, size_t C, size_t S, bool affine) {
+    const IO_T* __restrict__ grad_output, const IO_T* __restrict__ input,
+    const COMPUTE_T* __restrict__ batch_mean, const COMPUTE_T* __restrict__ batch_invar,
+    const PARAM_T* __restrict__ gamma, const COMPUTE_T* __restrict__ d_gamma,
+    const COMPUTE_T* __restrict__ d_beta, IO_T* __restrict__ grad_input, size_t N, size_t C,
+    size_t S, bool affine) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   size_t total_elements = N * C * S;
 
@@ -418,14 +421,15 @@ __global__ void batchnorm_dgrad_kernel(
     int c = (idx / S) % C;
 
     COMPUTE_T g = (affine && gamma) ? static_cast<COMPUTE_T>(gamma[c]) : COMPUTE_T(1);
-    COMPUTE_T istd = inv_std[c];
+    COMPUTE_T istd = batch_invar[c];
 
     float sum_dy = static_cast<float>(d_beta[c]);
     float sum_dy_x_norm = static_cast<float>(d_gamma[c]);
     float M = static_cast<float>(N * S);
 
     COMPUTE_T dy = static_cast<COMPUTE_T>(grad_output[idx]);
-    float x_hat = static_cast<float>(normalized_input[idx]);
+    float x_hat = (static_cast<float>(input[idx]) - static_cast<float>(batch_mean[c])) *
+                  static_cast<float>(batch_invar[c]);
 
     float term1 = static_cast<float>(g * istd) / M;
     float term2 = M * static_cast<float>(dy) - sum_dy - (x_hat * sum_dy_x_norm);
@@ -436,10 +440,11 @@ __global__ void batchnorm_dgrad_kernel(
 
 template <typename IO_T, typename PARAM_T, typename COMPUTE_T>
 __global__ void batchnorm_dgrad_kernel_vec(
-    const IO_T* __restrict__ grad_output, const COMPUTE_T* __restrict__ normalized_input,
-    const COMPUTE_T* __restrict__ inv_std, const PARAM_T* __restrict__ gamma,
-    const COMPUTE_T* __restrict__ d_gamma, const COMPUTE_T* __restrict__ d_beta,
-    IO_T* __restrict__ grad_input, size_t N, size_t C, size_t S, bool affine) {
+    const IO_T* __restrict__ grad_output, const IO_T* __restrict__ input,
+    const COMPUTE_T* __restrict__ batch_mean, const COMPUTE_T* __restrict__ batch_invar,
+    const PARAM_T* __restrict__ gamma, const COMPUTE_T* __restrict__ d_gamma,
+    const COMPUTE_T* __restrict__ d_beta, IO_T* __restrict__ grad_input, size_t N, size_t C,
+    size_t S, bool affine) {
   using VecT = typename VectoredTraits<IO_T>::type;
   constexpr int vec_size = VectoredTraits<IO_T>::size;
 
@@ -451,7 +456,7 @@ __global__ void batchnorm_dgrad_kernel_vec(
     int c = (scalar_idx / S) % C;
 
     COMPUTE_T g = (affine && gamma) ? static_cast<COMPUTE_T>(gamma[c]) : COMPUTE_T(1);
-    COMPUTE_T istd = inv_std[c];
+    COMPUTE_T istd = batch_invar[c];
     float sum_dy = static_cast<float>(d_beta[c]);
     float sum_dy_x_norm = static_cast<float>(d_gamma[c]);
     float M = static_cast<float>(N * S);
@@ -467,7 +472,9 @@ __global__ void batchnorm_dgrad_kernel_vec(
 #pragma unroll
     for (int k = 0; k < vec_size; ++k) {
       COMPUTE_T dy = static_cast<COMPUTE_T>(dy_arr[k]);
-      float x_hat = static_cast<float>(normalized_input[scalar_idx + k]);
+      float x_hat =
+          (static_cast<float>(input[scalar_idx + k]) - static_cast<float>(batch_mean[c])) *
+          static_cast<float>(batch_invar[c]);
       float term2 = M * static_cast<float>(dy) - sum_dy - (x_hat * sum_dy_x_norm);
       dx_arr[k] = static_cast<IO_T>(term1 * term2);
     }
@@ -649,9 +656,8 @@ void CUDAEngine::batchnorm_fwd(engine_handle backend_handle, const BatchNormStat
           batchnorm_fwd_kernel_vec<IO_T, PARAM_T, COMPUTE_T><<<num_blocks, 256, 0, stream>>>(
               static_cast<const IO_T*>(input), static_cast<COMPUTE_T*>(batch_mean),
               static_cast<COMPUTE_T*>(batch_invar), static_cast<const PARAM_T*>(gamma),
-              static_cast<const PARAM_T*>(beta), static_cast<IO_T*>(output),
-              static_cast<COMPUTE_T*>(workspace), stats.batch_size, stats.channels,
-              (stats.height * stats.width), true);
+              static_cast<const PARAM_T*>(beta), static_cast<IO_T*>(output), nullptr,
+              stats.batch_size, stats.channels, (stats.height * stats.width), true);
         } else {
           batchnorm_stats_kernel<IO_T, COMPUTE_T><<<stats.channels, 256, 0, stream>>>(
               static_cast<const IO_T*>(input), static_cast<COMPUTE_T*>(batch_mean),
@@ -663,9 +669,8 @@ void CUDAEngine::batchnorm_fwd(engine_handle backend_handle, const BatchNormStat
           batchnorm_fwd_kernel<IO_T, PARAM_T, COMPUTE_T><<<num_blocks, 256, 0, stream>>>(
               static_cast<const IO_T*>(input), static_cast<COMPUTE_T*>(batch_mean),
               static_cast<COMPUTE_T*>(batch_invar), static_cast<const PARAM_T*>(gamma),
-              static_cast<const PARAM_T*>(beta), static_cast<IO_T*>(output),
-              static_cast<COMPUTE_T*>(workspace), stats.batch_size, stats.channels,
-              (stats.height * stats.width), true);
+              static_cast<const PARAM_T*>(beta), static_cast<IO_T*>(output), nullptr,
+              stats.batch_size, stats.channels, (stats.height * stats.width), true);
         }
       });
 }
@@ -712,31 +717,34 @@ void CUDAEngine::batchnorm_bwd(engine_handle backend_handle, const BatchNormStat
         if ((stats.height * stats.width) % vec_size == 0) {
           batchnorm_wgrad_bgrad_reduce_kernel_vec<IO_T, COMPUTE_T>
               <<<stats.channels, 256, 0, stream>>>(
-                  static_cast<const IO_T*>(grad_output), static_cast<const COMPUTE_T*>(workspace),
+                  static_cast<const IO_T*>(grad_output), static_cast<const IO_T*>(input),
+                  static_cast<const COMPUTE_T*>(batch_mean),
+                  static_cast<const COMPUTE_T*>(batch_invar),
                   static_cast<COMPUTE_T*>(grad_gamma_temp), static_cast<COMPUTE_T*>(grad_beta_temp),
                   stats.batch_size, stats.channels, (stats.height * stats.width));
           size_t total_elements = stats.batch_size * stats.channels * (stats.height * stats.width);
           size_t total_vectors = total_elements / vec_size;
           int num_blocks = (total_vectors + 256 - 1) / 256;
           batchnorm_dgrad_kernel_vec<IO_T, PARAM_T, COMPUTE_T><<<num_blocks, 256, 0, stream>>>(
-              static_cast<const IO_T*>(grad_output), static_cast<const COMPUTE_T*>(workspace),
-              static_cast<const COMPUTE_T*>(batch_invar), static_cast<const PARAM_T*>(gamma),
-              static_cast<COMPUTE_T*>(grad_gamma_temp), static_cast<COMPUTE_T*>(grad_beta_temp),
-              static_cast<IO_T*>(grad_input), stats.batch_size, stats.channels,
-              (stats.height * stats.width), true);
+              static_cast<const IO_T*>(grad_output), static_cast<const IO_T*>(input),
+              static_cast<const COMPUTE_T*>(batch_mean), static_cast<const COMPUTE_T*>(batch_invar),
+              static_cast<const PARAM_T*>(gamma), static_cast<COMPUTE_T*>(grad_gamma_temp),
+              static_cast<COMPUTE_T*>(grad_beta_temp), static_cast<IO_T*>(grad_input),
+              stats.batch_size, stats.channels, (stats.height * stats.width), true);
         } else {
           batchnorm_wgrad_bgrad_reduce_kernel<IO_T, COMPUTE_T><<<stats.channels, 256, 0, stream>>>(
-              static_cast<const IO_T*>(grad_output), static_cast<const COMPUTE_T*>(workspace),
+              static_cast<const IO_T*>(grad_output), static_cast<const IO_T*>(input),
+              static_cast<const COMPUTE_T*>(batch_mean), static_cast<const COMPUTE_T*>(batch_invar),
               static_cast<COMPUTE_T*>(grad_gamma_temp), static_cast<COMPUTE_T*>(grad_beta_temp),
               stats.batch_size, stats.channels, (stats.height * stats.width));
           size_t total_elements = stats.batch_size * stats.channels * (stats.height * stats.width);
           int num_blocks = (total_elements + 256 - 1) / 256;
           batchnorm_dgrad_kernel<IO_T, PARAM_T, COMPUTE_T><<<num_blocks, 256, 0, stream>>>(
-              static_cast<const IO_T*>(grad_output), static_cast<const COMPUTE_T*>(workspace),
-              static_cast<const COMPUTE_T*>(batch_invar), static_cast<const PARAM_T*>(gamma),
-              static_cast<COMPUTE_T*>(grad_gamma_temp), static_cast<COMPUTE_T*>(grad_beta_temp),
-              static_cast<IO_T*>(grad_input), stats.batch_size, stats.channels,
-              (stats.height * stats.width), true);
+              static_cast<const IO_T*>(grad_output), static_cast<const IO_T*>(input),
+              static_cast<const COMPUTE_T*>(batch_mean), static_cast<const COMPUTE_T*>(batch_invar),
+              static_cast<const PARAM_T*>(gamma), static_cast<COMPUTE_T*>(grad_gamma_temp),
+              static_cast<COMPUTE_T*>(grad_beta_temp), static_cast<IO_T*>(grad_input),
+              stats.batch_size, stats.channels, (stats.height * stats.width), true);
         }
 
         if (true) {
